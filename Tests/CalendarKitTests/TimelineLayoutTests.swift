@@ -120,6 +120,34 @@ final class TimelineLayoutTests: XCTestCase {
                        "eventGap is subtracted from height, so it shortens every event by 2pt")
     }
 
+    /// Renders the day at both gaps to PNGs so the difference can be looked at rather than
+    /// argued about. Opt-in: set `TIMELINE_SNAPSHOT_DIR` to a writable directory.
+    func testWriteSnapshots() throws {
+        guard let dir = ProcessInfo.processInfo.environment["TIMELINE_SNAPSHOT_DIR"] else {
+            throw XCTSkip("set TIMELINE_SNAPSHOT_DIR to write snapshots")
+        }
+
+        for (gap, name) in [(2.0, "eventGap-2-shipped"), (0.0, "eventGap-0-fixed")] {
+            let timeline = TimelineView()
+            timeline.date = day
+            timeline.style.eventGap = gap
+            timeline.frame = CGRect(x: 0, y: 0, width: width, height: timeline.fullHeight)
+            timeline.layoutAttributes = schoolDay().map { EventLayoutAttributes($0) }
+            timeline.layoutIfNeeded()
+
+            // Crop to 08:30–12:45 so the periods fill the image.
+            let top = timeline.dateToY(at(8, 30))
+            let crop = CGRect(x: 0, y: top, width: width, height: timeline.dateToY(at(12, 45)) - top)
+            let image = UIGraphicsImageRenderer(size: crop.size).image { context in
+                UIColor.white.setFill()
+                context.fill(CGRect(origin: .zero, size: crop.size))
+                context.cgContext.translateBy(x: 0, y: -crop.minY)
+                timeline.layer.render(in: context.cgContext)
+            }
+            try image.pngData()!.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+        }
+    }
+
     // MARK: - The coupling itself
 
     /// Grouping is a question about time, so it must not change when a cosmetic inset does.
