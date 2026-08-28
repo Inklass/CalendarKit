@@ -441,6 +441,77 @@ public final class TimelineView: UIView {
             return start1 < start2
         }
 
+        if style.eventsWillOverlap {
+            layoutEventsAllowingOverlap(sortedEvents)
+        } else {
+            layoutEventsInColumns(sortedEvents)
+        }
+    }
+
+    /// Places events into columns so an event is only ever narrowed by events it genuinely
+    /// runs alongside.
+    ///
+    /// Two passes. First the events are split into *clusters*: a cluster ends as soon as an
+    /// event starts at or after everything before it has finished. A shared endpoint therefore
+    /// starts a new cluster — a period ending at 11:30 and the next starting at 11:30 do not
+    /// overlap, so consecutive lessons each span the timeline. (`DateInterval.intersects` would
+    /// say they overlap, which is what used to lay them out side by side at half width.)
+    ///
+    /// Then each cluster's events are packed into the first column free at their start time.
+    /// The width comes from how many columns the cluster needed — its peak concurrency — not
+    /// from how many events it contains. Without that, one long event narrowed everything it
+    /// merely spanned: an excursion across the morning squeezed each period it covered to a
+    /// quarter width even though only ever two things ran at once.
+    private func layoutEventsInColumns(_ sortedEvents: [EventLayoutAttributes]) {
+        var clusters = [[EventLayoutAttributes]]()
+        var cluster = [EventLayoutAttributes]()
+        var clusterEnd: Date?
+
+        for event in sortedEvents {
+            let interval = event.descriptor.dateInterval
+            if let end = clusterEnd, interval.start >= end {
+                clusters.append(cluster)
+                cluster = []
+                clusterEnd = nil
+            }
+            cluster.append(event)
+            clusterEnd = max(clusterEnd ?? interval.end, interval.end)
+        }
+        if !cluster.isEmpty {
+            clusters.append(cluster)
+        }
+
+        for cluster in clusters {
+            // The running end of each open column, so `firstIndex` finds the leftmost one this
+            // event can join. Events arrive in start order, so a column's end only ever grows.
+            var columnEnds = [Date]()
+            var columnOfEvent = [Int]()
+
+            for event in cluster {
+                let interval = event.descriptor.dateInterval
+                if let free = columnEnds.firstIndex(where: { $0 <= interval.start }) {
+                    columnEnds[free] = interval.end
+                    columnOfEvent.append(free)
+                } else {
+                    columnEnds.append(interval.end)
+                    columnOfEvent.append(columnEnds.count - 1)
+                }
+            }
+
+            let columnWidth = calendarWidth / Double(columnEnds.count)
+            for (index, event) in cluster.enumerated() {
+                let interval = event.descriptor.dateInterval
+                let startY = dateToY(interval.start)
+                let endY = dateToY(interval.end)
+                let x = style.leadingInset + Double(columnOfEvent[index]) * columnWidth
+                event.frame = CGRect(x: x, y: startY, width: columnWidth, height: endY - startY)
+            }
+        }
+    }
+
+    /// The `style.eventsWillOverlap` layout: events in a group are drawn at equal width from the
+    /// leading edge, deliberately overlapping one another.
+    private func layoutEventsAllowingOverlap(_ sortedEvents: [EventLayoutAttributes]) {
         var groupsOfEvents = [[EventLayoutAttributes]]()
         var overlappingEvents = [EventLayoutAttributes]()
 
@@ -450,46 +521,18 @@ public final class TimelineView: UIView {
                 continue
             }
 
-            let longestEvent = overlappingEvents.sorted { (attr1, attr2) -> Bool in
-                var period = attr1.descriptor.dateInterval
-                let period1 = period.end.timeIntervalSince(period.start)
-                period = attr2.descriptor.dateInterval
-                let period2 = period.end.timeIntervalSince(period.start)
-
-                return period1 > period2
+            guard let earliestEvent = overlappingEvents.first?.descriptor.dateInterval.start else { continue }
+            let dateInterval = getDateInterval(date: earliestEvent)
+            if event.descriptor.dateInterval.contains(dateInterval.start) {
+                overlappingEvents.append(event)
+                continue
             }
-                .first!
 
-            if style.eventsWillOverlap {
-                guard let earliestEvent = overlappingEvents.first?.descriptor.dateInterval.start else { continue }
-                let dateInterval = getDateInterval(date: earliestEvent)
-                if event.descriptor.dateInterval.contains(dateInterval.start) {
-                    overlappingEvents.append(event)
-                    continue
-                }
-            } else {
-                let lastEvent = overlappingEvents.last!
-                // `DateInterval.intersects` counts a shared endpoint as an overlap, so a period
-                // ending at 11:30 and the next starting at 11:30 would be grouped and laid out
-                // side by side at half width. Two events that merely touch do not overlap.
-                //
-                // That exemption used to be gated on `style.eventGap > 0`. `eventGap` is a
-                // cosmetic inset — `layoutEvents` subtracts it from every event view's width
-                // *and height* — so correct grouping could only be bought by drawing a visible
-                // gap above every consecutive event. Grouping is a question about time and must
-                // not depend on a style value.
-                if (longestEvent.descriptor.dateInterval.intersects(event.descriptor.dateInterval) && longestEvent.descriptor.dateInterval.end != event.descriptor.dateInterval.start) ||
-                    (lastEvent.descriptor.dateInterval.intersects(event.descriptor.dateInterval) && lastEvent.descriptor.dateInterval.end != event.descriptor.dateInterval.start) {
-                    overlappingEvents.append(event)
-                    continue
-                }
-            }
             groupsOfEvents.append(overlappingEvents)
             overlappingEvents = [event]
         }
 
         groupsOfEvents.append(overlappingEvents)
-        overlappingEvents.removeAll()
 
         for overlappingEvents in groupsOfEvents {
             let totalCount = Double(overlappingEvents.count)
