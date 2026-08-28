@@ -469,8 +469,17 @@ public final class TimelineView: UIView {
                 }
             } else {
                 let lastEvent = overlappingEvents.last!
-                if (longestEvent.descriptor.dateInterval.intersects(event.descriptor.dateInterval) && (longestEvent.descriptor.dateInterval.end != event.descriptor.dateInterval.start || style.eventGap <= 0.0)) ||
-                    (lastEvent.descriptor.dateInterval.intersects(event.descriptor.dateInterval) && (lastEvent.descriptor.dateInterval.end != event.descriptor.dateInterval.start || style.eventGap <= 0.0)) {
+                // `DateInterval.intersects` counts a shared endpoint as an overlap, so a period
+                // ending at 11:30 and the next starting at 11:30 would be grouped and laid out
+                // side by side at half width. Two events that merely touch do not overlap.
+                //
+                // That exemption used to be gated on `style.eventGap > 0`. `eventGap` is a
+                // cosmetic inset — `layoutEvents` subtracts it from every event view's width
+                // *and height* — so correct grouping could only be bought by drawing a visible
+                // gap above every consecutive event. Grouping is a question about time and must
+                // not depend on a style value.
+                if (longestEvent.descriptor.dateInterval.intersects(event.descriptor.dateInterval) && longestEvent.descriptor.dateInterval.end != event.descriptor.dateInterval.start) ||
+                    (lastEvent.descriptor.dateInterval.intersects(event.descriptor.dateInterval) && lastEvent.descriptor.dateInterval.end != event.descriptor.dateInterval.start) {
                     overlappingEvents.append(event)
                     continue
                 }
