@@ -14,12 +14,28 @@ open class EventView: UIView {
         view.backgroundColor = .clear
         view.isScrollEnabled = false
         view.clipsToBounds = true
+        // UITextView ships with an 8pt inset above and below the text. On a five-minute event
+        // the whole box is about 4pt tall, so the single line was laid out entirely below it
+        // and then clipped away — the title simply did not appear. Only the vertical inset is
+        // trimmed; `lineFragmentPadding` is horizontal and is left alone so the leading gap
+        // between the accent bar and the title stays as it was.
+        view.textContainerInset = UIEdgeInsets(top: 1, left: 0, bottom: 1, right: 2)
         return view
     }()
     
     /// Resize Handle views showing up when editing the event.
     /// The top handle has a tag of `0` and the bottom has a tag of `1`
     public private(set) lazy var eventResizeHandles = [EventResizeHandleView(), EventResizeHandleView()]
+
+    /// When an event is too short to fit even one line, its title is centred on the event and
+    /// allowed to spill a little past it rather than being clipped away entirely. `EventView`
+    /// does not clip its own bounds, so the title stays readable.
+    ///
+    /// Set to `false` to clip instead, which is the pre-fix behaviour.
+    public var showsTitleForVeryShortEvents = true
+
+    /// The wrapping mode the descriptor asked for, restored whenever more than one line fits.
+    private var preferredLineBreakMode: NSLineBreakMode?
     
     override public init(frame: CGRect) {
         super.init(frame: frame)
@@ -51,9 +67,7 @@ open class EventView: UIView {
             textView.textColor = event.textColor
             textView.font = event.font
         }
-        if let lineBreakMode = event.lineBreakMode {
-            textView.textContainer.lineBreakMode = lineBreakMode
-        }
+        preferredLineBreakMode = event.lineBreakMode
         descriptor = event
         backgroundColor = .clear
         layer.backgroundColor = event.backgroundColor.cgColor
@@ -126,19 +140,7 @@ open class EventView: UIView {
     
     override open func layoutSubviews() {
         super.layoutSubviews()
-        textView.frame = {
-            if UIView.userInterfaceLayoutDirection(for: semanticContentAttribute) == .rightToLeft {
-                return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width - 3, height: bounds.height)
-            } else {
-                return CGRect(x: bounds.minX + 8, y: bounds.minY, width: bounds.width - 6, height: bounds.height)
-            }
-        }()
-        if frame.minY < 0 {
-            var textFrame = textView.frame;
-            textFrame.origin.y = frame.minY * -1;
-            textFrame.size.height += frame.minY;
-            textView.frame = textFrame;
-        }
+        layoutTextView()
         let first = eventResizeHandles.first
         let last = eventResizeHandles.last
         let radius: Double = 40
@@ -157,6 +159,54 @@ open class EventView: UIView {
         }
     }
     
+    /// Centres the title in the event and guarantees at least one legible line.
+    ///
+    /// Two separate faults used to show here. Short events lost their title completely: the
+    /// text view was given the event's full height, and once that height fell below a line the
+    /// text was laid out past the bottom edge and clipped. Everything else was top-aligned, so
+    /// a one-line title in a tall event floated against the top rather than reading as part of
+    /// the block.
+    private func layoutTextView() {
+        let rightToLeft = UIView.userInterfaceLayoutDirection(for: semanticContentAttribute) == .rightToLeft
+        let x = rightToLeft ? bounds.minX : bounds.minX + 8
+        let width = max(0, rightToLeft ? bounds.width - 3 : bounds.width - 6)
+
+        // The part of the event actually on screen. An event that began on a previous day is
+        // drawn with a negative origin, so only what sits below y = 0 can hold text.
+        var visible = CGRect(x: x, y: bounds.minY, width: width, height: bounds.height)
+        if frame.minY < 0 {
+            visible.origin.y = -frame.minY
+            visible.size.height += frame.minY
+        }
+
+        let lineHeight = resolvedFont.lineHeight
+        let chromeHeight = textView.textContainerInset.top + textView.textContainerInset.bottom
+        let oneLine = lineHeight + chromeHeight
+
+        // Drop to a single truncated line as soon as a second one would not fit, so a long
+        // title cannot wrap itself out of a short event.
+        let linesThatFit = max(1, Int((visible.height - chromeHeight) / lineHeight))
+        textView.textContainer.maximumNumberOfLines = linesThatFit
+        textView.textContainer.lineBreakMode = linesThatFit == 1
+            ? .byTruncatingTail
+            : (preferredLineBreakMode ?? .byWordWrapping)
+
+        let naturalHeight = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
+        let floor = showsTitleForVeryShortEvents ? oneLine : 0
+        let height = max(min(naturalHeight, visible.height), floor)
+
+        textView.frame = CGRect(x: visible.minX,
+                                y: visible.midY - height / 2,
+                                width: width,
+                                height: height)
+    }
+
+    /// `textView.font` is nil while an `attributedText` is in use, so fall back to what the
+    /// descriptor asked for before giving up on a system default.
+    private var resolvedFont: UIFont {
+        textView.font ?? descriptor?.font ?? UIFont.boldSystemFont(ofSize: 12)
+    }
+
     private func applySketchShadow(
         color: UIColor = .black,
         alpha: Float = 0.5,

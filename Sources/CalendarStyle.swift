@@ -15,6 +15,25 @@ public enum DateStyle {
 public struct CalendarStyle {
     public var header = DayHeaderStyle()
     public var timeline = TimelineStyle()
+    public var multiDay = MultiDayStyle()
+    public init() {}
+}
+
+/// Styling specific to the several-days-at-once view.
+public struct MultiDayStyle {
+    /// Height of the weekday letter and date pill. The all-day strip is added below it.
+    public static let headerBaseHeight: Double = 48
+    public static let allDayRowHeight: Double = 18
+    /// Beyond this the strip would eat the timeline, so the rest collapse into a "+n" chip.
+    public static let maximumAllDayRows = 3
+
+    public var daySeparatorColor = SystemColors.systemSeparator
+    /// A wash behind today's column. Nil leaves it plain.
+    public var todayColumnBackgroundColor: UIColor? = SystemColors.systemRed.withAlphaComponent(0.04)
+    /// A wash behind Saturday and Sunday, the way a paper diary greys the weekend.
+    public var weekendColumnBackgroundColor: UIColor? = SystemColors.secondarySystemBackground
+    public var allDayFont = UIFont.systemFont(ofSize: 10)
+    public var allDayOverflowTextColor = SystemColors.secondaryLabel
     public init() {}
 }
 
