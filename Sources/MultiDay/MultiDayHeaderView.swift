@@ -43,7 +43,7 @@ final class DayHeaderCell: UIView {
         let isToday = calendar.isDateInToday(date)
         let isWeekend = calendar.isDateInWeekend(date)
 
-        var symbols = calendar.veryShortStandaloneWeekdaySymbols
+        let symbols = calendar.veryShortStandaloneWeekdaySymbols
         let weekday = calendar.component(.weekday, from: date) - 1
         symbolLabel.text = symbols.indices.contains(weekday) ? symbols[weekday] : ""
         symbolLabel.font = symbolsStyle.font
@@ -135,6 +135,12 @@ public final class MultiDayHeaderView: UIView {
 
     private(set) var allDayRows = 0
 
+    /// The days the cells are currently configured for. Rebuilding a heading costs a data
+    /// source read and a fresh set of chip labels, and `show` is called for every scroll
+    /// callback — several times a frame — so the expensive half only runs when the window of
+    /// days actually changes. Sliding is just a frame move.
+    private var configuredDates: [Date]?
+
     /// Height the header needs for the days it is currently showing.
     public var preferredHeight: Double {
         MultiDayStyle.headerBaseHeight + Double(allDayRows) * MultiDayStyle.allDayRowHeight
@@ -166,11 +172,13 @@ public final class MultiDayHeaderView: UIView {
         separator.backgroundColor = header.separatorColor
         allDayLabel.font = multiDay.allDayFont
         allDayLabel.textColor = multiDay.allDayOverflowTextColor
+        invalidateConfiguration()
         setNeedsLayout()
     }
 
     func updateCalendar(_ calendar: Calendar) {
         self.calendar = calendar
+        invalidateConfiguration()
         setNeedsLayout()
     }
 
@@ -183,6 +191,35 @@ public final class MultiDayHeaderView: UIView {
     /// - Returns: true when the header's preferred height changed, so the owner can re-lay out.
     @discardableResult
     func show(dates: [Date], dayWidth: Double, leadingInset: Double, fractionalOffset: Double) -> Bool {
+        var heightChanged = false
+
+        if needsReconfiguring(for: dates) {
+            heightChanged = reconfigure(for: dates)
+            configuredDates = dates
+        }
+
+        for (index, cell) in cells.enumerated() {
+            cell.frame = CGRect(x: Double(index) * dayWidth, y: 0, width: dayWidth, height: bounds.height)
+        }
+        content.frame = CGRect(x: leadingInset - fractionalOffset,
+                               y: 0,
+                               width: Double(cells.count) * dayWidth,
+                               height: bounds.height)
+        allDayLabel.frame = CGRect(x: 0,
+                                   y: MultiDayStyle.headerBaseHeight - 2,
+                                   width: leadingInset - 6,
+                                   height: MultiDayStyle.allDayRowHeight)
+        allDayLabel.isHidden = allDayRows == 0
+        return heightChanged
+    }
+
+    private func needsReconfiguring(for dates: [Date]) -> Bool {
+        guard let configuredDates, configuredDates.count == dates.count else { return true }
+        return !zip(configuredDates, dates).allSatisfy { calendar.isDate($0, inSameDayAs: $1) }
+    }
+
+    /// - Returns: true when the header's preferred height changed.
+    private func reconfigure(for dates: [Date]) -> Bool {
         let allDay = dates.map { allDayEventsProvider?($0) ?? [] }
         let rows = min(MultiDayStyle.maximumAllDayRows, allDay.map(\.count).max() ?? 0)
         let heightChanged = rows != allDayRows
@@ -205,19 +242,14 @@ public final class MultiDayHeaderView: UIView {
                                    style: style,
                                    daySelectorStyle: headerStyle.daySelector,
                                    symbolsStyle: headerStyle.daySymbols)
-            cells[index].frame = CGRect(x: Double(index) * dayWidth, y: 0, width: dayWidth, height: bounds.height)
         }
-
-        content.frame = CGRect(x: leadingInset - fractionalOffset,
-                               y: 0,
-                               width: Double(dates.count) * dayWidth,
-                               height: bounds.height)
-        allDayLabel.frame = CGRect(x: 0,
-                                   y: MultiDayStyle.headerBaseHeight - 2,
-                                   width: leadingInset - 6,
-                                   height: MultiDayStyle.allDayRowHeight)
-        allDayLabel.isHidden = rows == 0
         return heightChanged
+    }
+
+    /// Forces the next `show` to rebuild, for when the events behind the headings changed but
+    /// the days did not.
+    func invalidateConfiguration() {
+        configuredDates = nil
     }
 
     public override func layoutSubviews() {

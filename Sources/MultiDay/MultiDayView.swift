@@ -101,6 +101,8 @@ public class MultiDayView: UIView, MultiDayTimelineViewDelegate {
 
     public func reloadData() {
         timelineView.reloadData()
+        // The days on screen have not changed, but what is on them has.
+        headerView.invalidateConfiguration()
         syncHeader()
     }
 

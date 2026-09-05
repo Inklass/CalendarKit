@@ -246,8 +246,30 @@ final class MultiDayEdgeCaseTests: XCTestCase {
                                     + Double(MultiDayStyle.maximumAllDayRows) * MultiDayStyle.allDayRowHeight)
     }
 
+    /// The header caches its configuration so a scroll does not re-read the data source and
+    /// rebuild every chip several times a frame. `reloadData` has to punch through that cache,
+    /// or an event created today would not appear until you scrolled away and back.
+    func testReloadDataRefreshesTheHeaderEvenThoughTheDaysDidNotChange() {
+        let view = makeView()
+        view.move(to: day)
+        view.layoutIfNeeded()
+        XCTAssertEqual(view.headerView.allDayRows, 0)
+
+        let camp = Event()
+        camp.text = "Year 9 Camp"
+        camp.isAllDay = true
+        camp.dateInterval = DateInterval(start: day, end: day.addingTimeInterval(3600))
+        source?.events = [camp]
+
+        view.reloadData()
+        view.layoutIfNeeded()
+
+        XCTAssertEqual(view.headerView.allDayRows, 1,
+                       "a newly created all-day event must show without having to scroll away and back")
+    }
+
     private final class Source: EventDataSource {
-        private let events: [Event]
+        var events: [Event]
         private let calendar: Calendar
         init(_ events: [Event], calendar: Calendar) {
             self.events = events
