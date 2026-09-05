@@ -18,6 +18,49 @@
 # CalendarKit
 **CalendarKit** is a Swift calendar UI library for iOS and Mac Catalyst. It looks similar to the Apple Calendar app out-of-the-box, while allowing customization when needed. CalendarKit is composed of multiple modules which can be used together or independently.
 
+## Multi-day view (Inklass fork)
+
+`MultiDayView` shows several days side by side and scrolls **a day at a time**, the way Google
+Calendar's 3-day view does.
+
+```swift
+final class TimetableViewController: MultiDayViewController {
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        numberOfVisibleDays = 3
+    }
+
+    override func eventsForDate(_ date: Date) -> [EventDescriptor] {
+        timetable.events(on: date)
+    }
+}
+```
+
+It takes the same `EventDataSource` as `DayView`, so a screen already feeding one can show the
+other without changing how it loads events.
+
+**Why it is not just a wider `DayView`.** `TimelinePagerView` puts one day on each
+`UIPageViewController` page. Widening that to three days would move *three* days per swipe —
+Mon–Wed, then Thu–Sat — and a Wed–Fri window would be unreachable. `MultiDayView` puts the days
+on one canvas inside a single scroll view and snaps to a single-day boundary, so a drag can
+cross any number of days and settle on any of them. Columns near the viewport are built and the
+rest recycled, so the default two-year range costs a handful of views.
+
+| | |
+|---|---|
+| `numberOfVisibleDays` | Days on screen at once. Default 3. |
+| `daysBefore` / `daysAfter` | The scrollable range around the anchor date. Default 400 each. |
+| `move(to:animated:)` | Brings a date to the leading column. |
+| `scrollTo(hour24:animated:)` | Scrolls the time axis. |
+| `CalendarStyle.multiDay` | Day separators, the today and weekend washes, the all-day strip. |
+
+All-day events go in the header rather than the timeline, capped at
+`MultiDayStyle.maximumAllDayRows` rows with a `+n` chip for the rest.
+
+Not covered: drag-to-move and drag-to-resize. Dragging an event between columns re-dates it as
+well as re-timing it, which needs its own design. Day columns are laid out left to right in
+right-to-left locales too.
+
 ## Tutorials
 - [Create iOS Calendar App in Swift with CalendarKit](https://www.youtube.com/watch?v=cJ63-_z1qg8)
 
