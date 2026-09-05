@@ -87,7 +87,12 @@ public final class TimelineView: UIView {
     private var horizontalEventInset: Double = 3
 
     public var fullHeight: Double {
-        style.verticalInset * 2 + style.verticalDiff * 24
+        geometry.fullHeight
+    }
+
+    /// The time ⇄ position mapping for `date`, shared with the multi-day columns.
+    public var geometry: TimelineGeometry {
+        TimelineGeometry(date: date, calendar: calendar, style: style)
     }
 
     public var calendarWidth: Double {
@@ -441,110 +446,11 @@ public final class TimelineView: UIView {
             return start1 < start2
         }
 
-        if style.eventsWillOverlap {
-            layoutEventsAllowingOverlap(sortedEvents)
-        } else {
-            layoutEventsInColumns(sortedEvents)
-        }
-    }
-
-    /// Places events into columns so an event is only ever narrowed by events it genuinely
-    /// runs alongside.
-    ///
-    /// Two passes. First the events are split into *clusters*: a cluster ends as soon as an
-    /// event starts at or after everything before it has finished. A shared endpoint therefore
-    /// starts a new cluster — a period ending at 11:30 and the next starting at 11:30 do not
-    /// overlap, so consecutive lessons each span the timeline. (`DateInterval.intersects` would
-    /// say they overlap, which is what used to lay them out side by side at half width.)
-    ///
-    /// Then each cluster's events are packed into the first column free at their start time.
-    /// The width comes from how many columns the cluster needed — its peak concurrency — not
-    /// from how many events it contains. Without that, one long event narrowed everything it
-    /// merely spanned: an excursion across the morning squeezed each period it covered to a
-    /// quarter width even though only ever two things ran at once.
-    private func layoutEventsInColumns(_ sortedEvents: [EventLayoutAttributes]) {
-        var clusters = [[EventLayoutAttributes]]()
-        var cluster = [EventLayoutAttributes]()
-        var clusterEnd: Date?
-
-        for event in sortedEvents {
-            let interval = event.descriptor.dateInterval
-            if let end = clusterEnd, interval.start >= end {
-                clusters.append(cluster)
-                cluster = []
-                clusterEnd = nil
-            }
-            cluster.append(event)
-            clusterEnd = max(clusterEnd ?? interval.end, interval.end)
-        }
-        if !cluster.isEmpty {
-            clusters.append(cluster)
-        }
-
-        for cluster in clusters {
-            // The running end of each open column, so `firstIndex` finds the leftmost one this
-            // event can join. Events arrive in start order, so a column's end only ever grows.
-            var columnEnds = [Date]()
-            var columnOfEvent = [Int]()
-
-            for event in cluster {
-                let interval = event.descriptor.dateInterval
-                if let free = columnEnds.firstIndex(where: { $0 <= interval.start }) {
-                    columnEnds[free] = interval.end
-                    columnOfEvent.append(free)
-                } else {
-                    columnEnds.append(interval.end)
-                    columnOfEvent.append(columnEnds.count - 1)
-                }
-            }
-
-            let columnWidth = calendarWidth / Double(columnEnds.count)
-            for (index, event) in cluster.enumerated() {
-                let interval = event.descriptor.dateInterval
-                let startY = dateToY(interval.start)
-                let endY = dateToY(interval.end)
-                let x = style.leadingInset + Double(columnOfEvent[index]) * columnWidth
-                event.frame = CGRect(x: x, y: startY, width: columnWidth, height: endY - startY)
-            }
-        }
-    }
-
-    /// The `style.eventsWillOverlap` layout: events in a group are drawn at equal width from the
-    /// leading edge, deliberately overlapping one another.
-    private func layoutEventsAllowingOverlap(_ sortedEvents: [EventLayoutAttributes]) {
-        var groupsOfEvents = [[EventLayoutAttributes]]()
-        var overlappingEvents = [EventLayoutAttributes]()
-
-        for event in sortedEvents {
-            if overlappingEvents.isEmpty {
-                overlappingEvents.append(event)
-                continue
-            }
-
-            guard let earliestEvent = overlappingEvents.first?.descriptor.dateInterval.start else { continue }
-            let dateInterval = getDateInterval(date: earliestEvent)
-            if event.descriptor.dateInterval.contains(dateInterval.start) {
-                overlappingEvents.append(event)
-                continue
-            }
-
-            groupsOfEvents.append(overlappingEvents)
-            overlappingEvents = [event]
-        }
-
-        groupsOfEvents.append(overlappingEvents)
-
-        for overlappingEvents in groupsOfEvents {
-            let totalCount = Double(overlappingEvents.count)
-            for (index, event) in overlappingEvents.enumerated() {
-                let startY = dateToY(event.descriptor.dateInterval.start)
-                let endY = dateToY(event.descriptor.dateInterval.end)
-                let floatIndex = Double(index)
-                let x = style.leadingInset + floatIndex / totalCount * calendarWidth
-                let equalWidth = calendarWidth / totalCount
-                event.frame = CGRect(x: x, y: startY, width: equalWidth, height: endY - startY)
-            }
-        }
+        EventColumnLayout.apply(to: sortedEvents,
+                                width: calendarWidth,
+                                leadingInset: style.leadingInset,
+                                geometry: geometry,
+                                style: style)
     }
 
     private func prepareEventViews() {
@@ -568,58 +474,14 @@ public final class TimelineView: UIView {
     // MARK: - Helpers
 
     public func dateToY(_ date: Date) -> Double {
-        let provisionedDate = date.dateOnly(calendar: calendar)
-        let timelineDate = self.date.dateOnly(calendar: calendar)
-        var dayOffset: Double = 0
-        if provisionedDate > timelineDate {
-            // Event ending the next day
-            dayOffset += 1
-        } else if provisionedDate < timelineDate {
-            // Event starting the previous day
-            dayOffset -= 1
-        }
-        let fullTimelineHeight = 24 * style.verticalDiff
-        let hour = component(component: .hour, from: date)
-        let minute = component(component: .minute, from: date)
-        let hourY = Double(hour) * style.verticalDiff + style.verticalInset
-        let minuteY = Double(minute) * style.verticalDiff / 60
-        return hourY + minuteY + fullTimelineHeight * dayOffset
+        geometry.y(for: date)
     }
 
     public func yToDate(_ y: Double) -> Date {
-        let timeValue = y - style.verticalInset
-        var hour = Int(timeValue / style.verticalDiff)
-        let fullHourPoints = Double(hour) * style.verticalDiff
-        let minuteDiff = timeValue - fullHourPoints
-        let minute = Int(minuteDiff / style.verticalDiff * 60)
-        var dayOffset = 0
-        if hour > 23 {
-            dayOffset += 1
-            hour -= 24
-        } else if hour < 0 {
-            dayOffset -= 1
-            hour += 24
-        }
-        let offsetDate = calendar.date(byAdding: DateComponents(day: dayOffset),
-                                       to: date)!
-        let newDate = calendar.date(bySettingHour: hour,
-                                    minute: minute.clamped(to: 0...59),
-                                    second: 0,
-                                    of: offsetDate)
-        return newDate!
+        geometry.date(forY: y)
     }
 
     private func component(component: Calendar.Component, from date: Date) -> Int {
         calendar.component(component, from: date)
-    }
-
-    private func getDateInterval(date: Date) -> DateInterval {
-        let earliestEventMintues = component(component: .minute, from: date)
-        let splitMinuteInterval = style.splitMinuteInterval
-        let minute = component(component: .minute, from: date)
-        let minuteRange = (minute / splitMinuteInterval) * splitMinuteInterval
-        let beginningRange = calendar.date(byAdding: .minute, value: -(earliestEventMintues - minuteRange), to: date)!
-        let endRange = calendar.date(byAdding: .minute, value: splitMinuteInterval, to: beginningRange)!
-        return DateInterval(start: beginningRange, end: endRange)
     }
 }
