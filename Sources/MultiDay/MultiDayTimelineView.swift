@@ -285,9 +285,15 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
     /// sideways gesture from a downward one, and to put a downward one back where it began.
     private var dragStart: (offset: CGPoint, index: Int)?
 
+    /// The day the reader's gesture began on, held past the end of the drag so the settle can
+    /// tell a swipe that actually moved the view from one that came back to where it started.
+    /// Non-nil only for a gesture, which is what keeps a programmatic move silent.
+    private var dayAtGestureStart: Int?
+
     public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         prepareDayTick()
         dragStart = (scrollView.contentOffset, index(forOffset: scrollView.contentOffset.x))
+        dayAtGestureStart = dragStart?.index
     }
 
     /// Snaps to a whole day so columns never come to rest half off screen. The snap is to the
@@ -345,6 +351,9 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
         }
 
         targetContentOffset.pointee.x = offset(forIndex: Int(target))
+        // The warm-up from `scrollViewWillBeginDragging` only lasts a couple of seconds, and a
+        // deliberate drag can easily take longer than that before it is let go.
+        prepareDayTick()
     }
 
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -355,14 +364,7 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
 
         let leading = firstVisibleDate
         if lastReportedDate.map({ !calendar.isDate($0, inSameDayAs: leading) }) ?? true {
-            let isFirstReport = lastReportedDate == nil
             lastReportedDate = leading
-            // A tick per day crossed, the way a picker wheel marks its detents. It is the only
-            // thing that tells a reader mid-flick that the view moves in whole days — and it is
-            // silent for a programmatic move, which nobody asked for with their thumb.
-            if !isFirstReport, scrollView.isDragging || scrollView.isDecelerating {
-                emitDayTick()
-            }
             delegate?.multiDayTimeline(self, didScrollTo: leading)
         }
     }
@@ -376,17 +378,32 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
     }
 
     public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        delegate?.multiDayTimeline(self, didSettleOn: firstVisibleDate)
+        settle(scrollView)
     }
 
     public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
         if !decelerate {
-            delegate?.multiDayTimeline(self, didSettleOn: firstVisibleDate)
+            settle(scrollView)
         }
     }
 
     public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
-        delegate?.multiDayTimeline(self, didSettleOn: firstVisibleDate)
+        settle(scrollView)
+    }
+
+    /// A single tick once the view has come to rest on its new day, rather than one per day the
+    /// flick passed over: the haptic is the answer to "which day did I land on", and a stream of
+    /// them mid-flick says nothing a reader can act on while the columns are still moving.
+    ///
+    /// Silent when the day did not change — a vertical drag, or a nudge that snapped back — and
+    /// silent for a programmatic move, which nobody asked for with their thumb.
+    private func settle(_ scrollView: UIScrollView) {
+        let landed = firstVisibleDate
+        if let start = dayAtGestureStart, start != index(forOffset: scrollView.contentOffset.x) {
+            emitDayTick()
+        }
+        dayAtGestureStart = nil
+        delegate?.multiDayTimeline(self, didSettleOn: landed)
     }
 
     public override func traitCollectionDidChange(_ previous: UITraitCollection?) {
@@ -543,8 +560,8 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
     // MARK: - Haptics
 
 #if !os(tvOS)
-    /// Held rather than made per tick: preparing a generator warms the Taptic Engine, and a
-    /// fresh one on every day boundary would miss that warm-up and land late.
+    /// Held rather than made per tick: preparing a generator warms the Taptic Engine, and one
+    /// made at the moment the swipe lands would miss that warm-up and fire late.
     private lazy var dayTickGenerator = UISelectionFeedbackGenerator()
     private lazy var tapGenerator = UIImpactFeedbackGenerator(style: .light)
 #endif
@@ -560,8 +577,6 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
 #if !os(tvOS)
         guard multiDayStyle.providesHapticFeedback else { return }
         dayTickGenerator.selectionChanged()
-        // Keep it warm for the next detent of the same flick.
-        dayTickGenerator.prepare()
 #endif
     }
 
