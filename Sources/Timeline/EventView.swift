@@ -159,13 +159,20 @@ open class EventView: UIView {
         }
     }
     
-    /// Centres the title in the event and guarantees at least one legible line.
+    /// Places the title: top-aligned in a block with room to read down, centred in one that has
+    /// room for a single line.
     ///
-    /// Two separate faults used to show here. Short events lost their title completely: the
-    /// text view was given the event's full height, and once that height fell below a line the
-    /// text was laid out past the bottom edge and clipped. Everything else was top-aligned, so
-    /// a one-line title in a tall event floated against the top rather than reading as part of
-    /// the block.
+    /// A lesson is a block of text and reads from the top, the way a paragraph does. A block only
+    /// one line tall is a label, and a label belongs in the middle of what it labels — that is the
+    /// all-day chip, and the ten-minute duty.
+    ///
+    /// Neither case may take its vertical position from `sizeThatFits`. That measurement is not
+    /// stable across a layout pass: a title ending in a newline — which is every title this app
+    /// builds, `infoLines.reduce("", { $0 + $1 + "\\n" })` — measured two lines on the pass that
+    /// set the frame and one line afterwards. Two identical 24pt all-day chips ended up with their
+    /// titles 4pt apart, decided by nothing more than whether the string happened to end in a
+    /// newline. So the one-line case is given exactly one line's height, and the taller case is
+    /// pinned to the top, where an over- or under-measurement moves nothing.
     private func layoutTextView() {
         let rightToLeft = UIView.userInterfaceLayoutDirection(for: semanticContentAttribute) == .rightToLeft
         let x = rightToLeft ? bounds.minX : bounds.minX + 8
@@ -191,14 +198,23 @@ open class EventView: UIView {
             ? .byTruncatingTail
             : (preferredLineBreakMode ?? .byWordWrapping)
 
-        let naturalHeight = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
-        let floor = showsTitleForVeryShortEvents ? oneLine : 0
-        let height = max(min(naturalHeight, visible.height), floor)
+        if linesThatFit == 1 {
+            // One line is all that will be drawn, so one line is all the height it gets. On an
+            // event too short to hold even that, the line overhangs evenly rather than being
+            // clipped away — unless the caller has asked to clip.
+            let height = showsTitleForVeryShortEvents ? oneLine : min(oneLine, visible.height)
+            textView.frame = CGRect(x: visible.minX,
+                                    y: visible.midY - height / 2,
+                                    width: width,
+                                    height: height)
+            return
+        }
 
+        let naturalHeight = textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height
         textView.frame = CGRect(x: visible.minX,
-                                y: visible.midY - height / 2,
+                                y: visible.minY,
                                 width: width,
-                                height: height)
+                                height: min(max(naturalHeight, oneLine), visible.height))
     }
 
     /// `textView.font` is nil while an `attributedText` is in use, so fall back to what the
