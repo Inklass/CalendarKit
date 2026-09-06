@@ -196,6 +196,12 @@ public final class MultiDayHeaderView: UIView {
     private var style = MultiDayStyle()
     private var headerStyle = DayHeaderStyle()
 
+    /// Clips `content` to the columns' side of the hour gutter.
+    ///
+    /// The headings slide continuously, so the one on its way out travels left past the gutter
+    /// — where it was drawing straight over the month and the "all-day" label. Everything to
+    /// the left of `leadingInset` belongs to the gutter; nothing that scrolls may appear there.
+    private(set) var contentClip = UIView()
     private let content = UIView()
     private let separator = UIView()
     private let allDayLabel = UILabel()
@@ -245,7 +251,9 @@ public final class MultiDayHeaderView: UIView {
         allDayLabel.text = localizedString("all-day")
         monthLabel.textAlignment = .center
         monthLabel.numberOfLines = 2
-        addSubview(content)
+        contentClip.clipsToBounds = true
+        contentClip.addSubview(content)
+        addSubview(contentClip)
         addSubview(monthLabel)
         addSubview(allDayLabel)
         addSubview(separator)
@@ -308,7 +316,11 @@ public final class MultiDayHeaderView: UIView {
         for (index, cell) in cells.enumerated() {
             cell.frame = CGRect(x: Double(index) * dayWidth, y: 0, width: dayWidth, height: bounds.height)
         }
-        content.frame = CGRect(x: leadingInset - fractionalOffset,
+        contentClip.frame = CGRect(x: leadingInset,
+                                   y: 0,
+                                   width: max(0, bounds.width - leadingInset),
+                                   height: bounds.height)
+        content.frame = CGRect(x: -fractionalOffset,
                                y: 0,
                                width: Double(cells.count) * dayWidth,
                                height: bounds.height)
@@ -329,11 +341,17 @@ public final class MultiDayHeaderView: UIView {
     private func reconfigure(for dates: [Date]) -> Bool {
         let allDay = dates.map { allDayEventsProvider?($0) ?? [] }
         let counts = allDay.map(\.count)
-        let busiest = counts.max() ?? 0
+        // Only the days on screen may decide the strip's height. `dates` runs two days past the
+        // trailing column so a heading is ready before it scrolls in, and sizing on those too
+        // reserved a row for a camp two columns off screen — an empty band above a timetable
+        // for no reason a reader could see. The strip's height is animated, so growing when the
+        // busy day actually arrives costs nothing.
+        let onScreen = counts.prefix(max(1, monthDates.count))
+        let busiest = onScreen.max() ?? 0
         // Which day the toggle belongs to: the one that has more events than fit. Putting it on
         // every column would repeat "+2" three times across a strip that expands as a whole.
         let overflowIndex = busiest > MultiDayStyle.maximumAllDayRows
-            ? counts.firstIndex(of: busiest)
+            ? onScreen.firstIndex(of: busiest)
             : nil
         if overflowIndex == nil {
             // Nothing overflows any more, so there is nothing to be expanded out of.
@@ -475,5 +493,6 @@ public final class MultiDayHeaderView: UIView {
             cell.frame.size.height = bounds.height
         }
         content.frame.size.height = bounds.height
+        contentClip.frame.size.height = bounds.height
     }
 }

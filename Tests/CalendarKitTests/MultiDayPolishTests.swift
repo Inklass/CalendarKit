@@ -145,6 +145,50 @@ final class MultiDayPolishTests: XCTestCase {
         XCTAssertEqual(scrollView.decelerationRate, .normal, "scrolling down a day keeps its glide")
     }
 
+    /// Caught on a phone, not in a type: `isDirectionalLockEnabled` only locks on the first few
+    /// points of movement, and a drag that starts slightly diagonal slips past it. A thumb
+    /// travelling down a day then quietly landed two days away, which is worse than not moving
+    /// at all. A gesture that travelled further vertically is put back on the day it began on.
+    func testADownwardDragIsPutBackOnTheDayItStartedOn() {
+        let view = makeView()
+        let scrollView = UIScrollView()
+
+        scrollView.contentOffset = CGPoint(x: dayWidth * 4, y: 0)
+        view.timelineView.scrollViewWillBeginDragging(scrollView)
+        // Sideways drift of a third of a column, against 240pt of travel down the day.
+        scrollView.contentOffset = CGPoint(x: dayWidth * 4 + 40, y: 240)
+
+        var target = CGPoint(x: dayWidth * 4 + 90, y: 900)
+        withUnsafeMutablePointer(to: &target) {
+            view.timelineView.scrollViewWillEndDragging(scrollView,
+                                                        withVelocity: CGPoint(x: 0.4, y: 2.2),
+                                                        targetContentOffset: $0)
+        }
+        XCTAssertEqual(target.x, dayWidth * 4, accuracy: 0.01,
+                       "reading down a day must not change which days are on screen")
+    }
+
+    /// The axis is judged on distance travelled, not on release velocity: a deliberate two-day
+    /// drag ends at almost no velocity, and judging that one on velocity would call it vertical
+    /// and undo it.
+    func testASlowSidewaysDragIsNotMistakenForAVerticalOne() {
+        let view = makeView()
+        let scrollView = UIScrollView()
+
+        scrollView.contentOffset = CGPoint(x: dayWidth * 4, y: 0)
+        view.timelineView.scrollViewWillBeginDragging(scrollView)
+        scrollView.contentOffset = CGPoint(x: dayWidth * 6, y: 0)
+
+        var target = CGPoint(x: dayWidth * 6, y: 0)
+        withUnsafeMutablePointer(to: &target) {
+            view.timelineView.scrollViewWillEndDragging(scrollView,
+                                                        withVelocity: .zero,
+                                                        targetContentOffset: $0)
+        }
+        XCTAssertEqual(target.x, dayWidth * 6, accuracy: 0.01,
+                       "a slow two-day drag has to keep the two days it moved")
+    }
+
     // MARK: - All-day events
 
     /// They live in the header, outside the timeline, so nothing in the timeline's own tap
@@ -259,6 +303,23 @@ final class MultiDayPolishTests: XCTestCase {
                        "and the timeline must already have been pushed down by exactly one row")
     }
 
+    /// The header carries two days of slack past the trailing column so a heading is ready
+    /// before it scrolls in. Those days must not decide the strip's height: reserving a row for
+    /// a camp two columns off screen put an empty band above the timetable for no reason a
+    /// reader could see.
+    func testAnOffScreenDayDoesNotReserveARow() {
+        // Three visible days with nothing, and a camp on the day after the trailing slack.
+        let view = makeView(events: [allDay("Year 9 Camp", dayOffset: 3)])
+        view.layoutIfNeeded()
+        XCTAssertEqual(view.headerView.allDayRows, 0,
+                       "an all-day event a column off screen must not open the strip")
+
+        view.move(to: at(0, 0, dayOffset: 1))
+        view.layoutIfNeeded()
+        XCTAssertEqual(view.headerView.allDayRows, 1,
+                       "and it must open the strip once the day is actually on screen")
+    }
+
     /// The chips have to fit inside the header they are drawn in, or they are clipped away and
     /// the all-day strip looks like it is colliding with the timetable below it.
     func testEveryChipFitsInsideTheHeader() {
@@ -274,6 +335,30 @@ final class MultiDayPolishTests: XCTestCase {
                                          "a chip drawn past the header's height is clipped away")
             }
         }
+    }
+
+    /// The headings slide continuously, so the one on its way out travels left past the hour
+    /// gutter — where it was drawing straight over the month and the "all-day" label. Nothing
+    /// that scrolls may appear on the gutter's side of the header.
+    func testASlidingHeadingNeverReachesTheGutter() {
+        let view = makeView()
+        view.layoutIfNeeded()
+        // Park the timeline a third of a day past a boundary, which is where a heading is
+        // half-way out of the window.
+        view.timelineView.contentOffset.x += dayWidth / 3
+        view.layoutIfNeeded()
+
+        let leadingInset = TimelineStyle().leadingInset
+        let clip = view.headerView.contentClip
+        XCTAssertTrue(clip.clipsToBounds)
+        XCTAssertEqual(clip.frame.minX, leadingInset, accuracy: 0.01,
+                       "the headings' window has to start where the columns do")
+
+        // And the clip is doing real work: a heading genuinely does extend past the gutter.
+        let leading = view.headerView.cells.first
+        XCTAssertNotNil(leading)
+        XCTAssertLessThan(leading!.convert(leading!.bounds, to: view.headerView).minX, leadingInset,
+                          "the outgoing heading should be part-way out, or this proves nothing")
     }
 
     // MARK: - Month

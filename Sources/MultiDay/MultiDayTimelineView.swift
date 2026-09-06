@@ -281,24 +281,59 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
     /// throw rather than a nudge. UIKit reports a fast swipe at 2-3 and a slow drag near zero.
     private let flickVelocity: Double = 0.2
 
+    /// Where the current drag started, and on which day. Read at the end of the drag to tell a
+    /// sideways gesture from a downward one, and to put a downward one back where it began.
+    private var dragStart: (offset: CGPoint, index: Int)?
+
     public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
         prepareDayTick()
+        dragStart = (scrollView.contentOffset, index(forOffset: scrollView.contentOffset.x))
     }
 
     /// Snaps to a whole day so columns never come to rest half off screen. The snap is to the
     /// nearest single day, not to a block of `numberOfVisibleDays`, which is what lets a drag
     /// land on any three consecutive days.
     ///
-    /// Two things make it feel decisive rather than floaty. A flick always advances at least one
-    /// day, so a quick nudge can never project less than half a column and snap back to where it
-    /// started — which reads as the gesture being ignored. And the deceleration rate is chosen
-    /// per gesture: a horizontal throw settles on its day quickly, while scrolling down a day
-    /// keeps the long natural glide that reading a timetable wants.
+    /// Three things make it feel decisive rather than floaty.
+    ///
+    /// A gesture is judged sideways or downward by **how far it actually travelled on each
+    /// axis**, not by the velocity it was released at — a slow, deliberate two-day drag ends at
+    /// nearly zero velocity, and judging that one on velocity would call it vertical.
+    ///
+    /// A downward drag is put back on the day it started on. `isDirectionalLockEnabled` is
+    /// supposed to prevent the sideways drift in the first place, but it only ever locks on the
+    /// first few points of movement and a diagonal start slips through it — and a thumb
+    /// travelling down a day that quietly lands two days away is worse than one that does not
+    /// move at all.
+    ///
+    /// A sideways flick always advances at least one day, so a quick nudge can never project
+    /// less than half a column and snap back to where it started, which reads as the gesture
+    /// having been ignored. And the deceleration rate is chosen per gesture: a sideways throw
+    /// settles on its day quickly, while scrolling down a day keeps the long natural glide that
+    /// reading a timetable wants.
     public func scrollViewWillEndDragging(_ scrollView: UIScrollView,
                                           withVelocity velocity: CGPoint,
                                           targetContentOffset: UnsafeMutablePointer<CGPoint>) {
-        scrollView.decelerationRate = abs(velocity.x) > abs(velocity.y) ? .fast : .normal
+        let travelled = dragStart.map {
+            CGPoint(x: abs(scrollView.contentOffset.x - $0.offset.x),
+                    y: abs(scrollView.contentOffset.y - $0.offset.y))
+        } ?? .zero
+        // Distance is the better signal, but a gesture that moved nowhere has none to offer —
+        // fall back to the direction it was released in.
+        let isSideways = travelled.x > 0 || travelled.y > 0
+            ? travelled.x >= travelled.y
+            : abs(velocity.x) >= abs(velocity.y)
+
+        scrollView.decelerationRate = isSideways ? .fast : .normal
         guard dayWidth > 0 else { return }
+
+        guard isSideways else {
+            targetContentOffset.pointee.x = offset(forIndex: dragStart?.index
+                                                   ?? index(forOffset: scrollView.contentOffset.x))
+            dragStart = nil
+            return
+        }
+        dragStart = nil
 
         let current = scrollView.contentOffset.x / dayWidth
         var target = (targetContentOffset.pointee.x / dayWidth).rounded()
