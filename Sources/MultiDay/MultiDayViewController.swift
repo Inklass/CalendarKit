@@ -64,4 +64,11 @@ open class MultiDayViewController: UIViewController, EventDataSource, MultiDayVi
     open func multiDayView(_ multiDayView: MultiDayView, didTapTimelineAt date: Date) {}
     open func multiDayView(_ multiDayView: MultiDayView, didLongPressTimelineAt date: Date) {}
     open func multiDayView(_ multiDayView: MultiDayView, didMoveTo date: Date) {}
+    open func multiDayView(_ multiDayView: MultiDayView, didSelectAllDayEvent event: EventDescriptor, on date: Date) {}
+
+    /// Tapping a heading brings that day to the leading column. Overridable, but the default is
+    /// what a reader expects from a date they just pointed at.
+    open func multiDayView(_ multiDayView: MultiDayView, didSelectDayHeading date: Date) {
+        move(to: date, animated: true)
+    }
 }

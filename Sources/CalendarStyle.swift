@@ -26,6 +26,9 @@ public struct MultiDayStyle {
     public static let allDayRowHeight: Double = 18
     /// Beyond this the strip would eat the timeline, so the rest collapse into a "+n" chip.
     public static let maximumAllDayRows = 3
+    /// The ceiling once the reader has tapped "+n" and asked to see everything. Still a
+    /// ceiling: a day with twenty all-day entries must not push the timetable off screen.
+    public static let maximumExpandedAllDayRows = 8
 
     public var daySeparatorColor = SystemColors.systemSeparator
     /// A wash behind today's column. Nil leaves it plain.
@@ -34,6 +37,17 @@ public struct MultiDayStyle {
     public var weekendColumnBackgroundColor: UIColor? = SystemColors.secondarySystemBackground
     public var allDayFont = UIFont.systemFont(ofSize: 10)
     public var allDayOverflowTextColor = SystemColors.secondaryLabel
+    /// Behind the "+n" chip, so it reads as a control rather than a stray word.
+    public var allDayToggleBackgroundColor = SystemColors.systemGray4.withAlphaComponent(0.35)
+    /// The month named in the corner above the hour gutter, so a window of bare date numbers
+    /// still says where in the year it is.
+    public var monthFont = UIFont.systemFont(ofSize: 13, weight: .semibold)
+    public var monthTextColor = SystemColors.label
+    /// Shown under the month, and only when the days on screen are not in the current year.
+    public var monthYearFont = UIFont.systemFont(ofSize: 9)
+    /// Whether crossing a day boundary under the reader's finger gives a selection tick, the
+    /// way a picker does. Off for hosts that would rather stay silent.
+    public var providesHapticFeedback = true
     public init() {}
 }
 
