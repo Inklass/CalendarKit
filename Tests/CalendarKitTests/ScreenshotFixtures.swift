@@ -80,6 +80,28 @@ enum Shots {
         ]
     }
 
+    /// A day carrying more all-day entries than the strip shows, which is what the "+n" chip
+    /// and the strip's expansion exist for.
+    static func busyAllDayEvents() -> [Event] {
+        func allDay(_ title: String, _ dayOffset: Int, _ color: UIColor) -> Event {
+            let event = event(title,
+                              at(0, 0, dayOffset: dayOffset),
+                              at(23, 59, dayOffset: dayOffset),
+                              color)
+            event.isAllDay = true
+            return event
+        }
+        return [
+            allDay("Year 9 Camp", 0, .systemGreen),
+            allDay("Year 9 Camp", 1, .systemGreen),
+            allDay("Casual Clothes Day", 1, .systemOrange),
+            allDay("Book Week", 1, .systemTeal),
+            allDay("Athletics Carnival", 1, .systemBlue),
+            allDay("Yr 12 Study Leave", 1, .systemPurple),
+            allDay("Parent-Teacher Night", 2, .systemPurple),
+        ]
+    }
+
     static func inklassStyle() -> CalendarStyle {
         var style = CalendarStyle()
         style.timeline.eventGap = 2

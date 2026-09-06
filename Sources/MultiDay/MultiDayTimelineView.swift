@@ -129,6 +129,11 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.alwaysBounceVertical = true
         scrollView.contentInsetAdjustmentBehavior = .never
+        // One scroll view carries both axes, so without this a thumb travelling down a day
+        // wanders sideways and the view snaps to the next day the reader never asked for.
+        // The lock is decided per drag from the first movement, which is the distinction a
+        // reader is actually making.
+        scrollView.isDirectionalLockEnabled = true
         // Days always read left to right, so the scroll view must not mirror itself in a
         // right-to-left locale.
         scrollView.semanticContentAttribute = .forceLeftToRight
@@ -207,6 +212,9 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
         }
         columns.removeAll()
         pool.removeAll()
+        // The index space may have moved under the memo — a new anchor or calendar puts today
+        // at a different column.
+        cachedToday = nil
         setNeedsLayout()
     }
 
@@ -269,15 +277,39 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
         scrollView.setContentOffset(CGPoint(x: scrollView.contentOffset.x, y: y), animated: animated)
     }
 
+    /// The flick speed, in points per millisecond, above which a gesture counts as a deliberate
+    /// throw rather than a nudge. UIKit reports a fast swipe at 2-3 and a slow drag near zero.
+    private let flickVelocity: Double = 0.2
+
+    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        prepareDayTick()
+    }
+
     /// Snaps to a whole day so columns never come to rest half off screen. The snap is to the
     /// nearest single day, not to a block of `numberOfVisibleDays`, which is what lets a drag
     /// land on any three consecutive days.
+    ///
+    /// Two things make it feel decisive rather than floaty. A flick always advances at least one
+    /// day, so a quick nudge can never project less than half a column and snap back to where it
+    /// started — which reads as the gesture being ignored. And the deceleration rate is chosen
+    /// per gesture: a horizontal throw settles on its day quickly, while scrolling down a day
+    /// keeps the long natural glide that reading a timetable wants.
     public func scrollViewWillEndDragging(_ scrollView: UIScrollView,
                                           withVelocity velocity: CGPoint,
                                           targetContentOffset: UnsafeMutablePointer<CGPoint>) {
+        scrollView.decelerationRate = abs(velocity.x) > abs(velocity.y) ? .fast : .normal
         guard dayWidth > 0 else { return }
-        let target = targetContentOffset.pointee.x
-        targetContentOffset.pointee.x = offset(forIndex: Int((target / dayWidth).rounded()))
+
+        let current = scrollView.contentOffset.x / dayWidth
+        var target = (targetContentOffset.pointee.x / dayWidth).rounded()
+
+        if abs(velocity.x) >= flickVelocity {
+            let direction: Double = velocity.x > 0 ? 1 : -1
+            let atLeastOneDay = (velocity.x > 0 ? current.rounded(.down) : current.rounded(.up)) + direction
+            target = velocity.x > 0 ? max(target, atLeastOneDay) : min(target, atLeastOneDay)
+        }
+
+        targetContentOffset.pointee.x = offset(forIndex: Int(target))
     }
 
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
@@ -288,12 +320,25 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
 
         let leading = firstVisibleDate
         if lastReportedDate.map({ !calendar.isDate($0, inSameDayAs: leading) }) ?? true {
+            let isFirstReport = lastReportedDate == nil
             lastReportedDate = leading
+            // A tick per day crossed, the way a picker wheel marks its detents. It is the only
+            // thing that tells a reader mid-flick that the view moves in whole days — and it is
+            // silent for a programmatic move, which nobody asked for with their thumb.
+            if !isFirstReport, scrollView.isDragging || scrollView.isDecelerating {
+                emitDayTick()
+            }
             delegate?.multiDayTimeline(self, didScrollTo: leading)
         }
     }
 
     private var lastReportedDate: Date?
+
+    /// Whether the reader currently has hold of the view. The owner uses it to decide whether a
+    /// change of header height is safe to make abruptly.
+    public var isUserScrolling: Bool {
+        scrollView.isDragging || scrollView.isDecelerating || scrollView.isTracking
+    }
 
     public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
         delegate?.multiDayTimeline(self, didSettleOn: firstVisibleDate)
@@ -374,9 +419,27 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
         updateNowLine()
     }
 
+    /// Today's column index, recomputed only when the day actually turns over.
+    ///
+    /// This used to be a `Date()` plus a `dateComponents` call on every frame of every scroll,
+    /// for both the grid highlight and the now-line. Calendar arithmetic is not free, and doing
+    /// it sixty or a hundred and twenty times a second for an answer that changes once a day was
+    /// pure overhead on the one code path that has to stay smooth.
+    private var cachedToday: (day: Date, index: Int)?
+
+    private func todayIndex() -> Int {
+        let today = Date().dateOnly(calendar: calendar)
+        if let cachedToday, calendar.isDate(cachedToday.day, inSameDayAs: today) {
+            return cachedToday.index
+        }
+        let index = index(of: today)
+        cachedToday = (today, index)
+        return index
+    }
+
     private func updateGridHighlights() {
-        let todayIndex = index(of: Date().dateOnly(calendar: calendar))
-        grid.todayIndex = (0..<totalDays).contains(todayIndex) ? todayIndex : nil
+        let index = todayIndex()
+        grid.todayIndex = (0..<totalDays).contains(index) ? index : nil
         grid.contentOffset = scrollView.contentOffset
     }
 
@@ -426,10 +489,10 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
 
     private func updateNowLine() {
         let now = Date()
-        // Recomputed rather than cached, so the line and the "today" wash both follow the date
+        // The memo is keyed on the day, so the line and the "today" wash both follow the date
         // over midnight without the view being reloaded.
         let today = now.dateOnly(calendar: calendar)
-        let todayIndex = index(of: today)
+        let todayIndex = todayIndex()
         guard (0..<totalDays).contains(todayIndex), dayWidth > 0 else {
             nowLine.isHidden = true
             return
@@ -442,12 +505,47 @@ public final class MultiDayTimelineView: UIView, UIScrollViewDelegate {
                                height: 12)
     }
 
+    // MARK: - Haptics
+
+#if !os(tvOS)
+    /// Held rather than made per tick: preparing a generator warms the Taptic Engine, and a
+    /// fresh one on every day boundary would miss that warm-up and land late.
+    private lazy var dayTickGenerator = UISelectionFeedbackGenerator()
+    private lazy var tapGenerator = UIImpactFeedbackGenerator(style: .light)
+#endif
+
+    private func prepareDayTick() {
+#if !os(tvOS)
+        guard multiDayStyle.providesHapticFeedback else { return }
+        dayTickGenerator.prepare()
+#endif
+    }
+
+    private func emitDayTick() {
+#if !os(tvOS)
+        guard multiDayStyle.providesHapticFeedback else { return }
+        dayTickGenerator.selectionChanged()
+        // Keep it warm for the next detent of the same flick.
+        dayTickGenerator.prepare()
+#endif
+    }
+
+    /// A light knock when something is opened, so a tap that pushes a screen is acknowledged
+    /// before the screen itself arrives.
+    func emitSelectionTap() {
+#if !os(tvOS)
+        guard multiDayStyle.providesHapticFeedback else { return }
+        tapGenerator.impactOccurred()
+#endif
+    }
+
     // MARK: - Gestures
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
         guard isInsideColumns(recognizer) else { return }
         let point = recognizer.location(in: canvas)
         if let (_, eventView) = hitEvent(at: point) {
+            emitSelectionTap()
             delegate?.multiDayTimeline(self, didTap: eventView)
         } else if let date = date(atCanvasPoint: point) {
             delegate?.multiDayTimeline(self, didTapAt: date)

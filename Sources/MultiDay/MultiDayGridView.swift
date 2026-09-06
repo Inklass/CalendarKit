@@ -7,21 +7,33 @@ import UIKit
 /// living inside the scroll view. A canvas spanning the whole date range would be tens of
 /// thousands of points wide — far past the maximum texture a `CALayer` can be backed by, so
 /// the rules would simply stop appearing once you scrolled far enough.
+///
+/// Everything here is a solid-colour `CALayer` that gets *moved*, never a `draw(_:)` that gets
+/// re-run. The drawn version re-rasterised a viewport-sized bitmap — roughly 1200×2400 pixels
+/// of hour rules, separators and column washes — on the CPU for every frame of every scroll,
+/// which is the single most expensive thing the view used to do. Solid-colour layers with no
+/// contents carry no backing store at all: a frame of scrolling is now a handful of origin
+/// changes.
 final class MultiDayGridView: UIView {
 
     var style = MultiDayStyle() {
-        didSet { setNeedsDisplay() }
+        didSet { applyColors() }
     }
     var timelineStyle = TimelineStyle() {
-        didSet { setNeedsDisplay() }
+        didSet { rebuildHourRules() }
     }
 
     /// Where the day columns begin, i.e. the width reserved for the floating hour gutter.
-    var leadingInset: Double = 53 { didSet { setNeedsDisplay() } }
-    var dayWidth: Double = 0 { didSet { setNeedsDisplay() } }
-    var numberOfDays: Int = 0 { didSet { setNeedsDisplay() } }
+    var leadingInset: Double = 53 { didSet { setNeedsLayout() } }
+    var dayWidth: Double = 0 { didSet { setNeedsLayout() } }
+    var numberOfDays: Int = 0 { didSet { setNeedsLayout() } }
     /// Index of today within the date range, or nil when today is outside it.
-    var todayIndex: Int? { didSet { setNeedsDisplay() } }
+    var todayIndex: Int? {
+        didSet {
+            guard todayIndex != oldValue else { return }
+            setNeedsLayout()
+        }
+    }
 
     /// Answers whether the day at an index falls on a weekend. Asked only about the handful of
     /// columns actually on screen.
@@ -31,15 +43,33 @@ final class MultiDayGridView: UIView {
     var contentOffset: CGPoint = .zero {
         didSet {
             guard contentOffset != oldValue else { return }
-            setNeedsDisplay()
+            reposition()
         }
     }
+
+    /// The 25 hour rules, held in one container that is simply slid up and down. They never
+    /// change with horizontal scrolling, so a vertical drag costs one origin change.
+    private let hourRules = CALayer()
+    private var hourRuleLayers = [CALayer]()
+
+    /// Day separators and column washes, recycled the way the day columns themselves are.
+    /// Only the handful on screen exist.
+    private let columnDecoration = CALayer()
+    private var separators = [CALayer]()
+    private var washes = [CALayer]()
+
+    /// What `layoutDecoration` last built, so a frame of scrolling that stays inside the same
+    /// window of days only moves layers instead of recolouring them.
+    private var decoratedRange: ClosedRange<Int>?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .clear
-        contentMode = .redraw
         isUserInteractionEnabled = false
+        layer.masksToBounds = true
+        layer.addSublayer(columnDecoration)
+        layer.addSublayer(hourRules)
+        rebuildHourRules()
     }
 
     @available(*, unavailable)
@@ -47,60 +77,172 @@ final class MultiDayGridView: UIView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override func draw(_ rect: CGRect) {
-        super.draw(rect)
-        guard let context = UIGraphicsGetCurrentContext(), dayWidth > 0, numberOfDays > 0 else { return }
+    // MARK: - Colours
 
-        let offsetX = contentOffset.x
-        let offsetY = contentOffset.y
-
-        // Only the columns that can be seen are worth drawing, with one either side so a
-        // separator is never missing at the edge mid-drag.
-        let firstIndex = max(0, Int(floor(offsetX / dayWidth)) - 1)
-        let lastIndex = min(numberOfDays - 1, Int(ceil((offsetX + bounds.width) / dayWidth)) + 1)
-        guard firstIndex <= lastIndex else { return }
-
-        func x(of index: Int) -> Double {
-            leadingInset + Double(index) * dayWidth - offsetX
+    /// Layers do not resolve a dynamic `UIColor` the way a `draw(_:)` does, so every colour is
+    /// pinned against the current trait collection and re-pinned when the interface style flips.
+    private func applyColors() {
+        withoutAnimations {
+            let separator = timelineStyle.separatorColor.resolved(for: traitCollection).cgColor
+            hourRuleLayers.forEach { $0.backgroundColor = separator }
+            let daySeparator = style.daySeparatorColor.resolved(for: traitCollection).cgColor
+            separators.forEach { $0.backgroundColor = daySeparator }
         }
+        // The washes are per-column, so which colour each one wants is decided by the layout.
+        decoratedRange = nil
+        setNeedsLayout()
+    }
 
-        // Column washes first, so the rules and separators draw over them.
-        for index in firstIndex...lastIndex {
-            let color: UIColor?
-            if index == todayIndex {
-                color = style.todayColumnBackgroundColor
-            } else if isWeekend(index) {
-                color = style.weekendColumnBackgroundColor
-            } else {
-                color = nil
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        guard traitCollection.userInterfaceStyle != previous?.userInterfaceStyle else { return }
+        applyColors()
+    }
+
+    // MARK: - Hour rules
+
+    private var hourRulesHeight: Double {
+        timelineStyle.verticalInset * 2 + 24 * timelineStyle.verticalDiff
+    }
+
+    private func rebuildHourRules() {
+        withoutAnimations {
+            hourRuleLayers.forEach { $0.removeFromSuperlayer() }
+            hourRuleLayers = (0...24).map { _ in
+                let rule = CALayer()
+                hourRules.addSublayer(rule)
+                return rule
             }
-            guard let color else { continue }
-            context.setFillColor(color.cgColor)
-            context.fill(CGRect(x: x(of: index), y: 0, width: dayWidth, height: bounds.height))
+        }
+        applyColors()
+        setNeedsLayout()
+    }
+
+    // MARK: - Layout
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        withoutAnimations {
+            layoutHourRules()
+            layoutDecoration()
+            reposition()
+        }
+    }
+
+    private func layoutHourRules() {
+        let hairline = 1 / (window?.screen.scale ?? UIScreen.main.scale)
+        hourRules.frame = CGRect(x: 0, y: 0, width: bounds.width, height: hourRulesHeight)
+        for (hour, rule) in hourRuleLayers.enumerated() {
+            rule.frame = CGRect(x: 0,
+                                y: timelineStyle.verticalInset + Double(hour) * timelineStyle.verticalDiff,
+                                width: bounds.width,
+                                height: hairline)
+        }
+    }
+
+    /// Makes sure a separator and a wash exist for every column that can be seen, with one
+    /// either side so nothing is missing at the edge mid-drag.
+    private func layoutDecoration() {
+        guard dayWidth > 0, numberOfDays > 0, bounds.width > 0 else {
+            decoratedRange = nil
+            separators.forEach { $0.isHidden = true }
+            washes.forEach { $0.isHidden = true }
+            return
         }
 
-        let hairline = 1 / UIScreen.main.scale
-        context.setLineWidth(hairline)
+        let range = visibleRange
+        guard decoratedRange != range else { return }
+        decoratedRange = range
 
-        context.setStrokeColor(timelineStyle.separatorColor.cgColor)
-        for hour in 0...24 {
-            let y = timelineStyle.verticalInset + Double(hour) * timelineStyle.verticalDiff - offsetY
-            guard y >= -1, y <= bounds.height + 1 else { continue }
-            context.beginPath()
-            // Rules run the full width. The gutter floats over the leading edge with an opaque
-            // background, so they read as starting where the columns do.
-            context.move(to: CGPoint(x: 0, y: y))
-            context.addLine(to: CGPoint(x: bounds.width, y: y))
-            context.strokePath()
+        let count = range.count + 1  // one more separator than columns: both edges get a line
+        while separators.count < count {
+            let layer = CALayer()
+            columnDecoration.addSublayer(layer)
+            separators.append(layer)
+        }
+        while washes.count < range.count {
+            let layer = CALayer()
+            // Behind the separators, so a rule is never washed over.
+            columnDecoration.insertSublayer(layer, at: 0)
+            washes.append(layer)
         }
 
-        context.setStrokeColor(style.daySeparatorColor.cgColor)
-        for index in firstIndex...(lastIndex + 1) {
-            context.beginPath()
-            context.move(to: CGPoint(x: x(of: index), y: 0))
-            context.addLine(to: CGPoint(x: x(of: index), y: bounds.height))
-            context.strokePath()
+        let daySeparator = style.daySeparatorColor.resolved(for: traitCollection).cgColor
+        for (slot, layer) in separators.enumerated() {
+            layer.isHidden = slot >= count
+            layer.backgroundColor = daySeparator
         }
+        for (slot, layer) in washes.enumerated() {
+            guard slot < range.count else {
+                layer.isHidden = true
+                continue
+            }
+            let index = range.lowerBound + slot
+            let color: UIColor? = index == todayIndex
+                ? style.todayColumnBackgroundColor
+                : (isWeekend(index) ? style.weekendColumnBackgroundColor : nil)
+            layer.isHidden = color == nil
+            layer.backgroundColor = color?.resolved(for: traitCollection).cgColor
+        }
+    }
+
+    /// The columns at least partly on screen, plus one either side.
+    private var visibleRange: ClosedRange<Int> {
+        let first = max(0, Int(floor(contentOffset.x / dayWidth)) - 1)
+        let last = min(numberOfDays - 1, Int(ceil((contentOffset.x + bounds.width) / dayWidth)) + 1)
+        return first...max(first, last)
+    }
+
+    /// The whole cost of a scrolled frame: slide the rules vertically and the decoration
+    /// horizontally, and rebuild the decoration only when the window of days actually changes.
+    private func reposition() {
+        guard bounds.width > 0 else { return }
+        withoutAnimations {
+            hourRules.frame.origin.y = -contentOffset.y
+
+            guard dayWidth > 0, numberOfDays > 0 else { return }
+            layoutDecoration()
+            guard let range = decoratedRange else { return }
+
+            let hairline = 1 / (window?.screen.scale ?? UIScreen.main.scale)
+            func x(of index: Int) -> Double {
+                leadingInset + Double(index) * dayWidth - contentOffset.x
+            }
+
+            for (slot, layer) in separators.enumerated() where !layer.isHidden {
+                layer.frame = CGRect(x: x(of: range.lowerBound + slot),
+                                     y: 0,
+                                     width: hairline,
+                                     height: bounds.height)
+            }
+            for (slot, layer) in washes.enumerated() where !layer.isHidden {
+                layer.frame = CGRect(x: x(of: range.lowerBound + slot),
+                                     y: 0,
+                                     width: dayWidth,
+                                     height: bounds.height)
+            }
+        }
+    }
+
+    /// Layer geometry changes carry an implicit quarter-second animation by default, which on a
+    /// scroll shows up as the grid lagging behind the columns it is meant to be under.
+    private func withoutAnimations(_ body: () -> Void) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        body()
+        CATransaction.commit()
+    }
+}
+
+private extension UIColor {
+    /// A dynamic colour pinned against a trait collection. `CALayer` holds a `CGColor`, which
+    /// carries no notion of light or dark, so the resolution has to happen here and be redone
+    /// whenever the interface style changes.
+    func resolved(for traitCollection: UITraitCollection) -> UIColor {
+        if #available(iOS 13.0, tvOS 13.0, *) {
+            return resolvedColor(with: traitCollection)
+        }
+        return self
     }
 }
 

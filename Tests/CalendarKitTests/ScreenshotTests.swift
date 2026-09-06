@@ -90,13 +90,48 @@ final class ScreenshotTests: XCTestCase {
         try Shots.write(image, "05-five-day")
     }
 
-    private func makeThreeDay() -> (MultiDayViewController, StaticEvents) {
+    /// A day with more all-day entries than the strip shows: the last row is the "+n" that
+    /// opens it out.
+    func testThreeDayAllDayOverflow() throws {
+        let (controller, source) = makeThreeDay(allDay: Shots.busyAllDayEvents())
+        let image = Shots.render(controller, size: phone) { _ in
+            controller.move(to: Shots.anchorDay)
+            controller.multiDayView.scrollTo(hour24: 8.3, animated: false)
+            Shots.pump(0.3)
+        }
+        withExtendedLifetime(source) {}
+        try Shots.write(image, "06-all-day-overflow")
+    }
+
+    /// The same window with the strip opened out, which is what a tap on "+n" does.
+    func testThreeDayAllDayExpanded() throws {
+        let (controller, source) = makeThreeDay(allDay: Shots.busyAllDayEvents())
+        let image = Shots.render(controller, size: phone) { _ in
+            controller.move(to: Shots.anchorDay)
+            controller.multiDayView.scrollTo(hour24: 8.3, animated: false)
+            Shots.pump(0.3)
+            self.tapOverflowChip(in: controller.multiDayView)
+            Shots.pump(0.4)
+        }
+        withExtendedLifetime(source) {}
+        try Shots.write(image, "07-all-day-expanded")
+    }
+
+    private func tapOverflowChip(in view: MultiDayView) {
+        for cell in view.headerView.cells {
+            guard let chip = cell.chips.first(where: { $0.isToggle }) else { continue }
+            view.headerView.handleTap(at: CGPoint(x: cell.frame.midX, y: chip.frame.midY))
+            return
+        }
+    }
+
+    private func makeThreeDay(allDay: [Event] = Shots.allDayEvents()) -> (MultiDayViewController, StaticEvents) {
         let controller = MultiDayViewController()
         var events = [Event]()
         for offset in -3...3 {
             events += Shots.teachingDay(dayOffset: offset)
         }
-        events += Shots.allDayEvents()
+        events += allDay
         let source = StaticEvents(events)
         controller.loadViewIfNeeded()
         controller.dataSource = source

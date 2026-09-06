@@ -15,8 +15,16 @@ public final class DayColumnView: UIView {
 
     /// Set by the owning timeline. All-day events are filtered out here — they belong in the
     /// header, where they stay put while the timeline scrolls.
+    ///
+    /// Assigning the same day again is free. That matters because the app reloads the whole
+    /// timeline whenever any one day's network request lands, and a column that has not changed
+    /// was rebuilding every event view it owns — tearing down and re-laying out a screenful of
+    /// lessons, mid-scroll, several times as a week's worth of requests came back.
     public var events: [EventDescriptor] = [] {
         didSet {
+            let incoming = Self.fingerprint(of: events)
+            guard incoming != fingerprint else { return }
+            fingerprint = incoming
             attributes = events
                 .filter { !$0.isAllDay }
                 .sorted { $0.dateInterval.start < $1.dateInterval.start }
@@ -24,6 +32,25 @@ public final class DayColumnView: UIView {
             prepareEventViews()
             setNeedsLayout()
         }
+    }
+
+    /// What the column is currently showing. Nil until the first assignment, so an initial
+    /// empty day is still applied rather than mistaken for "already empty".
+    private var fingerprint: Int?
+
+    /// Everything that decides how a day is drawn: which events, when, what they say and what
+    /// colour they are. A layer being switched off changes the set; a lesson being recoloured
+    /// changes a colour; either has to repaint.
+    private static func fingerprint(of events: [EventDescriptor]) -> Int {
+        var hasher = Hasher()
+        for event in events where !event.isAllDay {
+            hasher.combine(event.dateInterval.start)
+            hasher.combine(event.dateInterval.end)
+            hasher.combine(event.text)
+            hasher.combine(event.backgroundColor)
+            hasher.combine(event.textColor)
+        }
+        return hasher.finalize()
     }
 
     var style = TimelineStyle() {
@@ -56,6 +83,9 @@ public final class DayColumnView: UIView {
         pool.enqueue(views: eventViews)
         eventViews.removeAll()
         attributes.removeAll()
+        // A different day's events must be applied even when they happen to hash the same as
+        // the day this column was showing — two free periods look identical to a fingerprint.
+        fingerprint = nil
     }
 
     private func prepareEventViews() {
