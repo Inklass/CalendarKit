@@ -1,12 +1,14 @@
 import XCTest
 @testable import CalendarKit
 
-/// A short event used to lose its title completely.
+/// Where an event's title sits, and whether it is drawn at all.
 ///
 /// `UITextView` insets its text by 8pt top and bottom. `EventView` handed it the event's full
 /// height, so on anything under about 20 minutes the single line was laid out below the box
-/// and then clipped away — a five-minute duty rendered as a bare coloured stripe. Everything
-/// taller was top-aligned rather than centred.
+/// and then clipped away — a five-minute duty rendered as a bare coloured stripe.
+///
+/// The rule these assert: a block with room for one line centres it, a taller block reads from
+/// the top, and neither position is taken from a `sizeThatFits` measurement.
 final class EventTextLayoutTests: XCTestCase {
 
     private let day = Date(timeIntervalSince1970: 1_772_064_000)
@@ -48,12 +50,25 @@ final class EventTextLayoutTests: XCTestCase {
         }
     }
 
-    /// The other half of the report: titles sat against the top rather than in the middle.
-    func testTheTitleIsVerticallyCentred() {
-        for minutes in [5, 30, 60, 240] {
+    /// A block with room for one line is a label, and a label sits in the middle of what it
+    /// labels — a ten-minute duty, an all-day chip.
+    func testAOneLineEventCentresItsTitle() {
+        for minutes in [5, 10, 20, 30] {
             let eventView = view(minutes: minutes)
+            XCTAssertEqual(eventView.textView.textContainer.maximumNumberOfLines, 1,
+                           "\(minutes)min: this test is only meaningful while one line fits")
             XCTAssertEqual(eventView.textView.frame.midY, eventView.bounds.midY, accuracy: 0.5,
                            "\(minutes)min: the title should be centred on the event")
+        }
+    }
+
+    /// Anything taller is a block of text and reads from the top, the way the title of a lesson
+    /// sits at the top of the lesson rather than floating in the middle of an empty hour.
+    func testATallEventTopAlignsItsTitle() {
+        for minutes in [60, 120, 240] {
+            let eventView = view(minutes: minutes)
+            XCTAssertEqual(eventView.textView.frame.minY, eventView.bounds.minY, accuracy: 0.5,
+                           "\(minutes)min: the title should sit at the top of the event")
         }
     }
 
@@ -146,5 +161,28 @@ final class EventTextLayoutTests: XCTestCase {
 
         XCTAssertGreaterThan(eventView.textView.frame.height, 0)
         XCTAssertEqual(eventView.textView.frame.midY, eventView.bounds.midY, accuracy: 0.5)
+    }
+
+    /// Two all-day chips of identical height put their titles on different lines.
+    ///
+    /// Reported from a phone: in the all-day strip "Mercy Week" sat 4pt higher than "Formation
+    /// Program: A Vision…" beside it. Both chips are 24pt.
+    ///
+    /// The placement came from `sizeThatFits`, and that measurement is not stable across a layout
+    /// pass — a title ending in a newline measured two lines when the frame was set and one line
+    /// afterwards. Every title this app builds ends in a newline
+    /// (`infoLines.reduce("", { $0 + $1 + "\\n" })`), so which chip drifted was decided by nothing
+    /// the reader can see.
+    func testChipsOfTheSameHeightAgreeOnWhereTheTitleGoes() {
+        let titles = ["Mercy Week",
+                      "Mercy Week\n",
+                      "Formation Program: A Vision for Catholic Education\n",
+                      "Mercy Week\nMercy Hall\n"]
+        let ys = titles.map { view(minutes: 0, title: $0, height: 24).textView.frame.minY }
+
+        for (title, y) in zip(titles, ys) {
+            XCTAssertEqual(y, ys[0], accuracy: 0.5,
+                           "chips of the same height must put their title at the same y: \(title.debugDescription)")
+        }
     }
 }
