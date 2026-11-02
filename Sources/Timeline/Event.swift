@@ -69,7 +69,21 @@ public final class Event: EventDescriptor {
     /// Dynamic color that changes depending on the user interface style (dark / light)
     private func dynamicStandardTextColor() -> UIColor {
         let light = textColorForLightTheme(baseColor: color)
-        return dynamicColor(light: light, dark: color)
+        let dark = textColorForDarkTheme(baseColor: color)
+        return dynamicColor(light: light, dark: dark)
+    }
+
+    /// Dark mode draws the text in the event's own colour, on a background that is the same
+    /// colour dimmed. A dark colour — a navy all-day "Week 4" — then reads as navy on navy, so
+    /// a dark colour is lifted towards white, keeping its hue. Colours bright enough to read
+    /// stay exactly as they were.
+    private func textColorForDarkTheme(baseColor: UIColor) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard baseColor.getRed(&r, green: &g, blue: &b, alpha: &a) else { return baseColor }
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        guard luminance < 0.5 else { return baseColor }
+        let lift: CGFloat = 0.6
+        return UIColor(red: r + (1 - r) * lift, green: g + (1 - g) * lift, blue: b + (1 - b) * lift, alpha: a)
     }
 
     private func textColorForLightTheme(baseColor: UIColor) -> UIColor {
