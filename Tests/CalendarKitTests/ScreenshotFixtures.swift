@@ -102,6 +102,28 @@ enum Shots {
         ]
     }
 
+    /// Ten all-day entries on the anchor day: five rows in the single-day view, one more than
+    /// its strip shows before it scrolls.
+    static func packedAllDayEvents() -> [Event] {
+        let titles: [(String, UIColor)] = [
+            ("Week 4", .systemIndigo),
+            ("HSC Examinations", .systemRed),
+            ("Year 9 Camp", .systemGreen),
+            ("Book Week", .systemTeal),
+            ("Athletics Carnival", .systemBlue),
+            ("Casual Clothes Day", .systemOrange),
+            ("Yr 12 Study Leave", .systemPurple),
+            ("Library Closed", .systemGray),
+            ("Music Tour", .systemPink),
+            ("Uniform Shop Open", .systemBrown),
+        ]
+        return titles.map { title, color in
+            let event = event(title, at(0, 0), at(23, 59), color)
+            event.isAllDay = true
+            return event
+        }
+    }
+
     static func inklassStyle() -> CalendarStyle {
         var style = CalendarStyle()
         style.timeline.eventGap = 2

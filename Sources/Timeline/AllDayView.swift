@@ -4,6 +4,15 @@ public final class AllDayView: UIView {
     private var style = AllDayViewStyle()
 
     private let allDayEventHeight: Double = 24.0
+    private let rowSpacing: Double = 1.0
+    /// Space between the strip's edges and its events.
+    private let verticalInset: Double = 2.0
+    /// Rows shown before the all day events scroll; half of the next row peeks out to hint at the rest.
+    private let maxVisibleRows: Double = 4
+
+    /// Fades whichever edge has more events behind it, so a row cut by that edge reads as
+    /// "more this way" rather than as a clipped title.
+    private let edgeFade = CAGradientLayer()
 
     public var events: [EventDescriptor] = [] {
         didSet {
@@ -57,6 +66,34 @@ public final class AllDayView: UIView {
         scrollView.setContentOffset(bottomOffset, animated: animated)
     }
 
+    override public func layoutSubviews() {
+        super.layoutSubviews()
+        // The fade depends on the content size, which the scroll view only knows once its
+        // own subviews are laid out.
+        scrollView.layoutIfNeeded()
+        updateEdgeFade()
+    }
+
+    private func updateEdgeFade() {
+        let bounds = scrollView.bounds
+        guard bounds.height > 0 else { return }
+        let offset = scrollView.contentOffset.y
+        let moreAbove = offset > 0.5
+        let moreBelow = offset < scrollView.contentSize.height - bounds.height - 0.5
+        let opaque = UIColor.black.cgColor
+        let clear = UIColor.clear.cgColor
+        // Half a row: the same height as the row that peeks out below the last full one.
+        let fade = min(allDayEventHeight * 0.5, bounds.height / 2) / bounds.height
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        // A scroll view's bounds move with its content, so the mask follows them to stay put.
+        edgeFade.frame = bounds
+        edgeFade.colors = [moreAbove ? clear : opaque, opaque, opaque, moreBelow ? clear : opaque]
+        edgeFade.locations = [0, NSNumber(value: fade), NSNumber(value: 1 - fade), 1]
+        CATransaction.commit()
+    }
+
     public func updateStyle(_ newStyle: AllDayViewStyle) {
         style = newStyle
         backgroundColor = style.backgroundColor
@@ -66,6 +103,8 @@ public final class AllDayView: UIView {
 
     private func configure() {
         clipsToBounds = true
+        scrollView.delegate = self
+        scrollView.layer.mask = edgeFade
         addSubview(scrollView)
         //add All-Day UILabel
         addSubview(textLabel)
@@ -115,11 +154,12 @@ public final class AllDayView: UIView {
         svLeftConstraint.priority = UILayoutPriority(rawValue: 999)
 
         svLeftConstraint.isActive = true
-        scrollView.topAnchor.constraint(equalTo: topAnchor, constant: 2).isActive = true
+        scrollView.topAnchor.constraint(equalTo: topAnchor, constant: verticalInset).isActive = true
         scrollView.trailingAnchor.constraint(equalTo: trailingAnchor).isActive = true
-        bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: 2).isActive = true
+        bottomAnchor.constraint(equalTo: scrollView.bottomAnchor, constant: verticalInset).isActive = true
 
-        let maxAllDayViewHeight = allDayEventHeight * 2 + allDayEventHeight * 0.5
+        let visibleRowsHeight = (allDayEventHeight + rowSpacing) * maxVisibleRows + allDayEventHeight * 0.5
+        let maxAllDayViewHeight = visibleRowsHeight + verticalInset * 2
         heightAnchor.constraint(lessThanOrEqualToConstant: maxAllDayViewHeight).isActive = true
 
         updateStyle(style)
@@ -134,13 +174,15 @@ public final class AllDayView: UIView {
         // clear event views from scroll view
         eventViews.removeAll()
         scrollView.subviews.forEach { $0.removeFromSuperview() }
+        // A new day starts at its first row, whatever the previous day was scrolled to.
+        scrollView.contentOffset = .zero
 
         if self.events.count == 0 { return }
 
         // create vertical stack view
         let verticalStackView = UIStackView(
             distribution: .fillEqually,
-            spacing: 1.0
+            spacing: rowSpacing
         )
         var horizontalStackView: UIStackView! = nil
 
@@ -156,7 +198,7 @@ public final class AllDayView: UIView {
                 horizontalStackView = UIStackView(
                     axis: .horizontal,
                     distribution: .fillEqually,
-                    spacing: 1.0
+                    spacing: rowSpacing
                 )
                 horizontalStackView.translatesAutoresizingMaskIntoConstraints = false
                 verticalStackView.addArrangedSubview(horizontalStackView)
@@ -179,5 +221,11 @@ public final class AllDayView: UIView {
         let verticalStackViewHeightConstraint = verticalStackView.heightAnchor.constraint(equalTo: scrollView.heightAnchor, multiplier: 1)
         verticalStackViewHeightConstraint.priority = UILayoutPriority(rawValue: 999)
         verticalStackViewHeightConstraint.isActive = true
+    }
+}
+
+extension AllDayView: UIScrollViewDelegate {
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        updateEdgeFade()
     }
 }

@@ -46,7 +46,6 @@ public final class TimelineView: UIView {
             prepareEventViews()
             allDayView.events = allDayLayoutAttributes.map { $0.descriptor }
             allDayView.isHidden = allDayLayoutAttributes.count == 0
-            allDayView.scrollToBottom()
 
             setNeedsLayout()
         }
