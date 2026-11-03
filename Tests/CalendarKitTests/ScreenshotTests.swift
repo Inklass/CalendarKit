@@ -37,6 +37,32 @@ final class ScreenshotTests: XCTestCase {
         try Shots.write(image, "01-day-view")
     }
 
+    /// The single-day view on a day with more all-day entries than its strip shows: four rows,
+    /// the edge with more behind it fading out. The day is loaded twice because the pager
+    /// reuses its pages, and a reused page is the one already laid out when its events arrive.
+    func testDayViewPackedAllDay() throws {
+        let controller = TimelineContainerController()
+        controller.timeline.date = Shots.anchorDay
+        controller.timeline.updateStyle(Shots.inklassStyle().timeline)
+        let attributes = (Shots.teachingDay() + Shots.packedAllDayEvents()).map(EventLayoutAttributes.init)
+        controller.timeline.layoutAttributes = attributes
+
+        let size = CGSize(width: phone.width, height: 300)
+        let image = Shots.render(controller, size: size) { _ in
+            controller.timeline.layoutAttributes = attributes
+            controller.view.layoutIfNeeded()
+            controller.container.contentOffset.y = controller.timeline.dateToY(Shots.at(8, 30))
+        }
+        try Shots.write(image, "01b-day-view-packed-all-day")
+
+        // Scrolled part way, there are events both above and below, so both edges fade.
+        let allDayView = try XCTUnwrap(controller.timeline.subviews.compactMap { $0 as? AllDayView }.first)
+        let scrolled = Shots.render(controller, size: size) { _ in
+            allDayView.scrollView.contentOffset.y = 6
+        }
+        try Shots.write(scrolled, "01c-day-view-packed-all-day-scrolled")
+    }
+
     /// Short events only, so nothing distracts from how their titles are drawn.
     /// This is the fixture the text fix is judged on.
     func testShortEvents() throws {
