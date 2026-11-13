@@ -63,9 +63,14 @@ open class EventView: UIView {
             textView.attributedText = attributedText
             textView.setNeedsLayout()
         } else {
-            textView.text = event.text
-            textView.textColor = event.textColor
-            textView.font = event.font
+            // Not `textView.text = …`: that styles the new string from the text view's
+            // `typingAttributes`, which the previous event's `attributedText` left behind.
+            // Views are reused, so a cancelled class's strikethrough carried over onto the
+            // running class drawn next in the same view (PRO-84501).
+            textView.attributedText = NSAttributedString(
+                string: event.text,
+                attributes: [.font: event.font, .foregroundColor: event.textColor]
+            )
         }
         preferredLineBreakMode = event.lineBreakMode
         descriptor = event
