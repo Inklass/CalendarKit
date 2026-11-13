@@ -65,8 +65,8 @@ open class EventView: UIView {
         } else {
             // Not `textView.text = …`: that styles the new string from the text view's
             // `typingAttributes`, which the previous event's `attributedText` left behind.
-            // Views are reused, so a cancelled class's strikethrough carried over onto the
-            // running class drawn next in the same view (PRO-84501).
+            // Views are reused, so a cancelled event's strikethrough carried over onto the
+            // next event drawn in the same view (PRO-84501).
             textView.attributedText = NSAttributedString(
                 string: event.text,
                 attributes: [.font: event.font, .foregroundColor: event.textColor]
